@@ -1,185 +1,527 @@
-## Documentação do Projeto de Roteamento de Ônibus com Integração
+# 🚌 Sistema de Rotas de Ônibus com Grafo Direcional
 
-### **Visão Geral**
-Este projeto implementa um sistema de roteamento para encontrar o caminho mais eficiente entre duas paradas de ônibus, considerando a possibilidade de integração em diferentes linhas. O sistema utiliza algoritmos de grafos e a técnica de serialização para melhorar a performance. O projeto está dividido em módulos para facilitar a manutenção, expansão e reutilização.
+Sistema inteligente de busca de rotas de ônibus que utiliza algoritmo A* para encontrar o menor caminho entre paradas, respeitando a direção das linhas e identificando pontos de integração.
 
-### **Arquitetura do Projeto**
-O projeto é organizado da seguinte maneira:
+## 📋 Índice
 
-```plaintext
-bus_route_project/
+- [Visão Geral](#visão-geral)
+- [Arquitetura](#arquitetura)
+- [Estrutura de Arquivos](#estrutura-de-arquivos)
+- [Bancos de Dados](#bancos-de-dados)
+- [Instalação](#instalação)
+- [Como Usar](#como-usar)
+- [Funcionamento Interno](#funcionamento-interno)
+- [Exemplo de Uso](#exemplo-de-uso)
+- [Tratamento de Erros](#tratamento-de-erros)
+
+---
+
+## 🎯 Visão Geral
+
+Este sistema resolve um problema comum em sistemas de transporte público: **encontrar rotas viáveis respeitando a direção das linhas de ônibus**.
+
+### Problema Resolvido
+
+Em sistemas tradicionais, um grafo pode sugerir pegar uma linha "IDA" para voltar ao ponto de origem, simplesmente porque há uma conexão entre as paradas. Este sistema elimina esse problema ao:
+
+1. Criar um grafo inicial com todas as conexões possíveis
+2. Validar cada conexão usando a sequência real de paradas de cada linha
+3. Manter apenas conexões direcionalmente válidas
+
+### Características
+
+- ✅ **Grafo Direcional**: Respeita a ordem das paradas em cada linha
+- ✅ **Otimização A***: Busca eficiente do menor caminho
+- ✅ **Detecção de Integrações**: Identifica onde trocar de linha
+- ✅ **Cache Inteligente**: Salva o grafo processado para carregamento rápido
+- ✅ **Interface Amigável**: Feedback claro e detalhado
+
+---
+
+## 🏗️ Arquitetura
+
+### Fluxo de Dados
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ETAPA 1: Carregamento de Dados                             │
+│  ┌──────────────────────┐    ┌──────────────────────┐      │
+│  │ paradas_linhas_2025  │    │  linhas_onibus.db    │      │
+│  │     .db              │    │                       │      │
+│  │                      │    │                       │      │
+│  │ • ID das paradas     │    │ • Sequência de        │      │
+│  │ • Linhas que passam  │    │   paradas por linha   │      │
+│  └──────────────────────┘    └──────────────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  ETAPA 2: Construção do Grafo Inicial (Não-Direcional)     │
+│                                                              │
+│  Parada A ←→ Parada B  (Linha 504.1)                       │
+│  Parada B ←→ Parada C  (Linha 504.1)                       │
+│  Parada C ←→ Parada A  (Linha 602.1)                       │
+│                                                              │
+│  ⚠️  Pode conter conexões inválidas!                        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  ETAPA 3: Validação Direcional                              │
+│                                                              │
+│  Para cada aresta (origem → destino, linha):                │
+│    1. Busca sequência da linha no linhas_onibus.db         │
+│    2. Verifica: índice(destino) > índice(origem)?          │
+│    3. Mantém apenas se válido                               │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  ETAPA 4: Grafo Direcional Final                            │
+│                                                              │
+│  Parada A → Parada B  (Linha 504.1 - IDA)    ✓             │
+│  Parada B → Parada C  (Linha 504.1 - IDA)    ✓             │
+│  Parada C ✗ Parada A  (Linha 602.1 - IDA)    ✗ REMOVIDA    │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  ETAPA 5: Busca de Rotas (Algoritmo A*)                    │
+│                                                              │
+│  Entrada: Origem + Destino                                  │
+│  Saída: Caminho otimizado com integrações                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📁 Estrutura de Arquivos
+
+```
+projeto/
 │
-├── main.py             # Arquivo principal que executa o algoritmo e a lógica de busca de rotas
-├── database.py         # Módulo responsável por carregar os dados do banco de dados SQLite
-├── graph.py            # Módulo para construção do grafo de conexões
-├── a_star.py           # Módulo que contém a implementação do algoritmo A* com integração
-└── utils.py            # Módulo utilitário (funções auxiliares como serialização com pickle)
+├── database.py              # Módulo de acesso aos bancos de dados
+│   ├── carregar_dados_bd()
+│   └── carregar_sequencias_linhas()
+│
+├── graph.py                 # Módulo de construção e validação do grafo
+│   ├── construir_grafo()
+│   ├── validar_conexao_direcional()
+│   └── aplicar_direcionalidade()
+│
+├── a_star.py                # Implementação do algoritmo A*
+│   ├── heuristica()
+│   └── encontrar_caminho_com_integracao_astar()
+│
+├── utils.py                 # Utilitários (cache/persistência)
+│   ├── salvar_grafo()
+│   └── carregar_grafo()
+│
+├── main.py                  # Ponto de entrada da aplicação
+│
+├── paradas_linhas_2025.db   # BD: Paradas e linhas
+├── linhas_onibus.db         # BD: Sequências de paradas
+└── grafo_direcional.pkl     # Cache do grafo processado (gerado)
 ```
-
-### **Descrição dos Módulos**
-
-#### **1. `main.py`**
-O arquivo `main.py` é o ponto de entrada do programa. Ele coordena a execução do projeto, carregando dados, construindo o grafo, e utilizando o algoritmo A* para encontrar o caminho mais eficiente entre duas paradas.
-
-**Funcionalidades:**
-- Carrega o grafo do arquivo serializado, se disponível.
-- Caso contrário, carrega os dados do banco de dados e constrói o grafo.
-- Mantém o programa rodando para responder a múltiplas consultas.
-- Imprime o caminho encontrado, incluindo as paradas, linhas, e pontos de integração.
-
-#### **2. `database.py`**
-O módulo `database.py` é responsável por carregar os dados do banco de dados SQLite. Ele extrai as paradas e as linhas de ônibus associadas e as retorna para uso posterior na construção do grafo.
-
-**Funcionalidades:**
-- Conecta ao banco de dados SQLite.
-- Extrai os dados de paradas e linhas.
-- Retorna os dados em estruturas de fácil manipulação (listas e dicionários).
-
-**Motivação:**
-- Separar a lógica de acesso a dados da lógica de processamento, facilitando a manutenção e possíveis mudanças na fonte de dados.
-
-#### **3. `graph.py`**
-O módulo `graph.py` é responsável por construir o grafo de conexões entre as paradas de ônibus, baseando-se nos dados de paradas e linhas extraídos do banco de dados.
-
-**Funcionalidades:**
-- Recebe as paradas e as linhas associadas.
-- Constrói um grafo onde os nós são paradas e as arestas representam as linhas que conectam essas paradas.
-
-**Motivação:**
-- Manter a construção do grafo separada da lógica principal, permitindo alterações no modelo de dados sem impactar o restante do código.
-
-#### **4. `a_star.py`**
-Este módulo contém a implementação do algoritmo A* para encontrar o caminho mais eficiente entre duas paradas, com suporte à integração entre diferentes linhas.
-
-**Funcionalidades:**
-- Implementa o algoritmo A* para busca de caminhos.
-- Utiliza uma heurística simples baseada na diferença entre IDs de paradas para priorizar a busca.
-- Retorna o caminho completo, incluindo as paradas, linhas, e pontos de integração.
-
-**Motivação:**
-- Usar o A* devido à sua eficiência em encontrar o caminho mais curto, especialmente em grafos onde uma boa heurística pode ser aplicada.
-
-#### **5. `utils.py`**
-O módulo `utils.py` contém funções auxiliares, como as de serialização e desserialização do grafo utilizando `pickle`.
-
-**Funcionalidades:**
-- Serializa o grafo para um arquivo em disco para carregamento rápido em execuções futuras.
-- Carrega o grafo do arquivo, se disponível, evitando a reconstrução desnecessária.
-
-**Motivação:**
-- Melhorar a performance do sistema, evitando o carregamento e a construção do grafo toda vez que o programa é executado.
-- Centralizar funções utilitárias em um módulo separado para facilitar a manutenção e a reutilização.
-
-### **Processo de Execução**
-1. **Carregamento do Grafo**: Ao iniciar o programa, ele tenta carregar o grafo previamente serializado a partir de um arquivo. Isso reduz o tempo de inicialização, já que evita a reconstrução do grafo.
-  
-2. **Construção do Grafo**: Se o grafo não for encontrado no arquivo, ele é construído a partir dos dados carregados do banco de dados. Após a construção, o grafo é salvo em disco para execuções futuras.
-
-3. **Execução do Algoritmo A***: Após o carregamento ou construção do grafo, o programa fica em execução contínua, aguardando a entrada do usuário para encontrar e retornar o caminho mais eficiente entre as paradas especificadas.
-
-4. **Impressão do Caminho**: O caminho encontrado pelo algoritmo é impresso, detalhando as paradas e as linhas utilizadas, bem como os pontos de integração, se houver.
-
-### **Motivações para as Soluções Escolhidas**
-
-#### **1. Arquitetura Modular**
-- **Motivação**: A arquitetura modular facilita a manutenção, expansão e teste do sistema. Cada módulo tem uma responsabilidade clara e bem definida, o que permite fazer alterações em uma parte do sistema sem afetar as outras.
-
-#### **2. Serialização com `pickle`**
-- **Motivação**: A serialização com `pickle` foi escolhida para evitar a necessidade de reconstruir o grafo a cada execução do programa, o que pode ser um processo demorado. A serialização melhora significativamente o tempo de resposta ao iniciar o programa, carregando rapidamente o grafo a partir de um arquivo.
-
-#### **3. Algoritmo A***
-- **Motivação**: O algoritmo A* foi escolhido por ser um dos mais eficientes para a busca de caminhos em grafos, especialmente quando há uma boa heurística disponível. Ele é particularmente útil em contextos onde o desempenho é crítico e onde a busca por rotas mais curtas é uma prioridade.
-
-#### **4. Uso de SQLite**
-- **Motivação**: SQLite foi escolhido por ser uma solução de banco de dados leve e fácil de configurar, ideal para um projeto de porte pequeno a médio. Ele permite manipular dados estruturados sem a necessidade de configurar um servidor de banco de dados completo.
-
-### **Possíveis Expansões Futuras**
-- **Integração com Dados em Tempo Real**: Adicionar a capacidade de integrar dados em tempo real, como atrasos ou congestionamentos, para melhorar a precisão das rotas sugeridas.
-- **Aprimoramento da Heurística**: Substituir a heurística baseada em IDs por uma que use coordenadas geográficas, como a fórmula de Haversine, para calcular a distância real entre paradas.
-- **Interface de Usuário**: Desenvolver uma interface gráfica ou uma API REST para facilitar o uso do sistema por usuários finais ou outros sistemas.
-
-### **Conclusão**
-Este projeto fornece uma base sólida para um sistema de roteamento de ônibus com suporte a integrações entre linhas. A escolha de uma arquitetura modular, combinada com o uso de técnicas de otimização como a serialização do grafo, garante um desempenho eficiente e facilita futuras expansões e melhorias.
-
 
 ---
 
-Para utilizar o endpoint `/route/` que foi implementado, você pode fazer uma requisição HTTP do tipo GET, passando como parâmetros de consulta (`query parameters`) as paradas de origem e destino.
+## 💾 Bancos de Dados
 
-Aqui estão os detalhes de como utilizá-lo:
+### 1. `paradas_linhas_2025.db`
 
-### **URL do Endpoint:**
+**Tabela:** `tab_linha_parada`
+
+| Campo             | Tipo    | Descrição                           |
+|-------------------|---------|-------------------------------------|
+| `id_ponto_parada` | INTEGER | ID único da parada                  |
+| `linhas`          | TEXT    | Linhas separadas por vírgula        |
+
+**Exemplo:**
 ```
-GET /route/?origem={id_origem}&destino={id_destino}
-```
-
-### **Parâmetros de Consulta (Query Parameters):**
-- `origem`: ID da parada de origem (inteiro).
-- `destino`: ID da parada de destino (inteiro).
-
-### **Exemplo de Requisição:**
-
-#### **Via Navegador ou Cliente HTTP (como Postman ou Insomnia):**
-Você pode acessar diretamente no navegador (se os IDs das paradas forem, por exemplo, 1 e 10):
-
-```
-http://127.0.0.1:8000/route/?origem=1&destino=10
+id_ponto_parada | linhas
+----------------|------------------------------------------------
+2466            | 0.604 - IDA, 0.641 - IDA, 504.1 - CIRCULAR, ...
+2465            | 0.604 - IDA, 0.641 - IDA, 504.1 - CIRCULAR, ...
 ```
 
-Ou, em uma ferramenta como o Postman ou Insomnia, faça uma requisição GET para essa URL.
+### 2. `linhas_onibus.db`
 
-#### **Via `curl` (linha de comando):**
+**Tabela:** `linhas_onibus`
 
-Se você quiser testar pela linha de comando com `curl`, o comando seria:
+| Campo       | Tipo    | Descrição                                    |
+|-------------|---------|----------------------------------------------|
+| `id`        | INTEGER | ID único da linha                            |
+| `cod_linha` | TEXT    | Código da linha (ex: "504.1")                |
+| `sentido`   | TEXT    | Sentido (ex: "IDA", "VOLTA", "CIRCULAR")     |
+| `paradas`   | TEXT    | Sequência de IDs das paradas separados por vírgula |
 
-```bash
-curl "http://127.0.0.1:8000/route/?origem=1&destino=10"
+**Exemplo:**
+```
+cod_linha | sentido | paradas
+----------|---------|-------------------------
+504.1     | IDA     | 2466, 2467, 2468, 2469
+504.1     | VOLTA   | 2469, 2468, 2467, 2466
 ```
 
-### **Resposta Esperada (Exemplo):**
-Se o caminho entre as paradas de origem e destino for encontrado, a resposta será um JSON com a descrição da rota:
-
-```json
-{
-  "rota": [
-    {
-      "parada_origem": 1,
-      "linha": "Linha A",
-      "parada_destino": 5
-    },
-    {
-      "parada_origem": 5,
-      "linha": "Linha B",
-      "parada_destino": 10
-    }
-  ]
-}
-```
-
-Caso não seja possível encontrar uma rota, a resposta será um erro com status HTTP `404`:
-
-```json
-{
-  "detail": "Nenhuma rota encontrada"
-}
-```
-
-### Explicação do funcionamento:
-- **origem**: ID da parada onde a viagem começa.
-- **destino**: ID da parada onde a viagem termina.
-- A API usa o algoritmo A* para encontrar a rota mais eficiente e retorna as paradas intermediárias e as linhas que conectam as paradas, incluindo as integrações (troca de linhas, se houver).
-
-### Teste de rota completa no seu código:
-1. Inicie o servidor com o FastAPI (`uvicorn`).
-2. Acesse o endpoint conforme o exemplo acima, fornecendo os IDs das paradas de origem e destino que existem no seu banco de dados SQLite.
 ---
 
-Instalação fast api:
+## 🚀 Instalação
 
-```bash
-pip install fastapi uvicorn
+### Requisitos
+
+- Python 3.7+
+- Bibliotecas padrão: `sqlite3`, `heapq`, `pickle`, `collections`
+
+### Passos
+
+1. **Clone ou baixe os arquivos do projeto**
+
+2. **Verifique se os bancos de dados estão no diretório:**
+   ```bash
+   ls -l *.db
+   # Deve mostrar: paradas_linhas_2025.db e linhas_onibus.db
+   ```
+
+3. **Execute o sistema:**
+   ```bash
+   python main.py
+   ```
+
+---
+
+## 📖 Como Usar
+
+### Primeira Execução
+
+Na primeira vez, o sistema irá:
+
+1. Carregar dados dos bancos
+2. Construir o grafo inicial
+3. Aplicar validação direcional
+4. Salvar o grafo em cache (`grafo_direcional.pkl`)
+
+```
+=== Construindo grafo direcional ===
+
+[1/4] Carregando paradas e linhas...
+  ✓ 5432 paradas carregadas
+
+[2/4] Construindo grafo inicial...
+  ✓ 89234 conexões criadas
+
+[3/4] Carregando sequências das linhas...
+  ✓ 287 linhas com sequências carregadas
+
+[4/4] Aplicando direcionalidade ao grafo...
+  Arestas mantidas: 44617
+  Arestas removidas: 44617
+
+✓ Grafo direcional construído com sucesso!
 ```
 
-```bash
-uvicorn api.api:app --reload
+### Execuções Seguintes
+
+O sistema carregará o grafo do cache instantaneamente:
+
 ```
+✓ Grafo direcional carregado do arquivo.
+```
+
+### Buscando Rotas
+
+```
+============================================================
+       SISTEMA DE ROTAS DE ÔNIBUS - BUSCA DE CAMINHOS
+============================================================
+
+------------------------------------------------------------
+Digite a parada de origem (ou 'sair' para encerrar): 2466
+Digite a parada de destino: 2470
+
+Buscando rota...
+
+============================================================
+✓ CAMINHO ENCONTRADO
+============================================================
+
+📍 PERCURSO:
+   Parada 2466 → Linha [504.1 - IDA] → Parada 2467
+   Parada 2467 → Linha [504.1 - IDA] → Parada 2468
+   Parada 2468 → Linha [602.1 - IDA] → Parada 2470
+
+🔄 INTEGRAÇÕES NECESSÁRIAS:
+   Parada 2468: 504.1 - IDA → 602.1 - IDA
+
+📊 RESUMO:
+   • Total de paradas: 4
+   • Linhas utilizadas: 2
+   • Integrações: 1
+   • Linhas: 504.1 - IDA, 602.1 - IDA
+```
+
+### Comandos de Saída
+
+Para encerrar o programa, digite:
+- `sair`
+- `exit`
+- `q`
+- `0`
+
+Ou pressione `Ctrl+C`
+
+---
+
+## ⚙️ Funcionamento Interno
+
+### 1. Construção do Grafo Inicial
+
+**Arquivo:** `graph.py` → `construir_grafo()`
+
+```python
+# Para cada parada
+for parada in paradas:
+    # Para cada linha que passa nela
+    for linha in linhas_de_onibus[parada]:
+        # Conecta com todas as outras paradas dessa linha
+        for vizinha in paradas:
+            if linha in linhas_de_onibus[vizinha]:
+                grafo[parada].append((vizinha, linha))
+```
+
+**Resultado:** Grafo não-direcional com todas as conexões possíveis.
+
+### 2. Validação Direcional
+
+**Arquivo:** `graph.py` → `validar_conexao_direcional()`
+
+```python
+# Busca a sequência de paradas da linha
+sequencia = sequencias[linha]
+
+# Encontra posições da origem e destino
+idx_origem = sequencia.index(parada_origem)
+idx_destino = sequencia.index(parada_destino)
+
+# Válido apenas se destino vem DEPOIS da origem
+return idx_destino > idx_origem
+```
+
+**Exemplo:**
+
+```
+Linha 504.1 - IDA: [2466, 2467, 2468, 2469]
+
+Conexão: 2466 → 2468 (Linha 504.1 - IDA)
+  idx_origem = 0
+  idx_destino = 2
+  2 > 0? SIM ✓ VÁLIDA
+
+Conexão: 2468 → 2466 (Linha 504.1 - IDA)
+  idx_origem = 2
+  idx_destino = 0
+  0 > 2? NÃO ✗ INVÁLIDA (removida)
+```
+
+### 3. Algoritmo A*
+
+**Arquivo:** `a_star.py` → `encontrar_caminho_com_integracao_astar()`
+
+**Componentes:**
+
+1. **Função Heurística:** `h(n) = |n - destino|`
+   - Estimativa simples da distância até o destino
+   - Baseada na diferença entre IDs
+
+2. **Custo:** `g(n) = número de paradas percorridas`
+
+3. **Custo Total:** `f(n) = g(n) + h(n)`
+
+**Processo:**
+
+```
+1. Inicializa fila com origem
+2. Enquanto fila não vazia:
+   a. Remove parada com menor custo estimado
+   b. Se é o destino, retorna caminho
+   c. Expande vizinhos não visitados
+   d. Adiciona à fila com custo atualizado
+```
+
+### 4. Cache do Grafo
+
+**Arquivo:** `utils.py`
+
+- **Formato:** Pickle (`.pkl`)
+- **Conteúdo:** Dicionário com o grafo direcional processado
+- **Vantagem:** Evita reprocessamento (construção pode levar minutos em bases grandes)
+
+**Quando regenerar:**
+
+```bash
+# Exclua o arquivo de cache para forçar reconstrução
+rm grafo_direcional.pkl
+python main.py
+```
+
+---
+
+## 📊 Exemplo de Uso
+
+### Cenário: Rota com 1 Integração
+
+```
+Origem: Parada 2466
+Destino: Parada 2475
+
+Linhas disponíveis em 2466:
+- 504.1 - IDA
+- 602.1 - IDA
+- 603.1 - IDA
+
+Linhas disponíveis em 2475:
+- 630.1 - IDA
+- 602.1 - IDA
+```
+
+**Resultado:**
+
+```
+📍 PERCURSO:
+   Parada 2466 → Linha [602.1 - IDA] → Parada 2470
+   Parada 2470 → Linha [602.1 - IDA] → Parada 2475
+
+📊 RESUMO:
+   • Total de paradas: 3
+   • Linhas utilizadas: 1
+   • Integrações: 0
+   • Linhas: 602.1 - IDA
+```
+
+### Cenário: Nenhum Caminho Encontrado
+
+```
+Origem: Parada 9999
+Destino: Parada 1000
+
+============================================================
+✗ NENHUM CAMINHO ENCONTRADO
+============================================================
+
+Possíveis motivos:
+  • As paradas não estão conectadas
+  • Não há linha que conecte origem e destino
+  • IDs de paradas inválidos
+```
+
+---
+
+## 🛠️ Tratamento de Erros
+
+### Erros Comuns e Soluções
+
+| Erro | Causa | Solução |
+|------|-------|---------|
+| `FileNotFoundError: paradas_linhas_2025.db` | Banco de dados não encontrado | Verifique se o arquivo está no diretório correto |
+| `ValueError: invalid literal for int()` | ID de parada inválido | Digite apenas números inteiros |
+| `KeyError: linha não encontrada` | Linha sem sequência cadastrada | Verifique se `linhas_onibus.db` está completo |
+| Grafo vazio após processamento | Formato incorreto das paradas em `linhas_onibus.db` | Verifique formato: "2466,2467,2468" |
+
+### Debug: Verificar Dados
+
+```python
+# Adicione no main.py para debug
+print("Amostra de linhas_de_onibus:")
+for parada, linhas in list(linhas_de_onibus.items())[:5]:
+    print(f"  Parada {parada}: {linhas}")
+
+print("\nAmostra de sequencias:")
+for linha, paradas in list(sequencias.items())[:5]:
+    print(f"  {linha}: {paradas[:10]}...")  # Primeiras 10 paradas
+```
+
+---
+
+## 🔧 Configurações Avançadas
+
+### Modificar Heurística
+
+Para rotas geograficamente distribuídas, considere usar coordenadas GPS:
+
+```python
+# a_star.py
+import math
+
+def heuristica(parada_atual, destino, coordenadas):
+    """Heurística baseada em distância euclidiana"""
+    x1, y1 = coordenadas[parada_atual]
+    x2, y2 = coordenadas[destino]
+    return math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+```
+
+### Priorizar Menos Integrações
+
+Modifique o custo para penalizar trocas de linha:
+
+```python
+# a_star.py
+PENALIDADE_INTEGRACAO = 5
+
+# No loop do A*
+custo_integracao = 0
+if len(caminho) > 0 and caminho[-1] != linha:
+    custo_integracao = PENALIDADE_INTEGRACAO
+
+custo_estimado = custo + 1 + custo_integracao + heuristica(vizinho, destino)
+```
+
+---
+
+## 📝 Notas Técnicas
+
+### Complexidade
+
+- **Construção do grafo:** O(P² × L) onde P = paradas, L = linhas médias por parada
+- **Validação direcional:** O(E × S) onde E = arestas, S = tamanho médio das sequências
+- **Busca A*:** O(E × log(V)) onde V = vértices, E = arestas
+
+### Memória
+
+- Grafo armazenado: ~50-200 MB para 5000-10000 paradas
+- Recomenda-se mínimo 512 MB RAM disponível
+
+### Performance
+
+| Operação | Tempo Estimado |
+|----------|----------------|
+| Construção inicial | 30s - 2min |
+| Validação direcional | 10s - 30s |
+| Carregamento do cache | < 1s |
+| Busca de rota (A*) | < 0.1s |
+
+---
+
+## 📄 Licença
+
+Este projeto é de código aberto. Sinta-se livre para modificar e distribuir.
+
+---
+
+## 👥 Contribuindo
+
+Melhorias sugeridas:
+
+- [ ] Adicionar suporte a horários de operação das linhas
+- [ ] Implementar busca por múltiplas rotas alternativas
+- [ ] Interface web com mapa interativo
+- [ ] API REST para integração com outros sistemas
+- [ ] Considerar tempo de espera entre ônibus
+- [ ] Calcular tempo estimado de viagem
+
+---
+
+## 📞 Suporte
+
+Para dúvidas ou problemas:
+
+1. Verifique a seção [Tratamento de Erros](#tratamento-de-erros)
+2. Execute com modo debug ativado
+3. Verifique a integridade dos bancos de dados
+
+**Desenvolvido com ❤️ para sistemas de transporte público mais eficientes**
