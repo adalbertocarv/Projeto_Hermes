@@ -1,95 +1,398 @@
+import sys
+import os
+
+# Pega o caminho absoluto do diretório onde este arquivo (api.py) está
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Pega o diretório pai (no seu caso, 'integracao_v2')
+parent_dir = os.path.dirname(current_dir)
+# Adiciona o diretório pai ao caminho de busca do Python
+sys.path.append(parent_dir)
+
+# AGORA as importações de módulos na pasta pai vão funcionar
 from fastapi import FastAPI, HTTPException, Query
-from database import carregar_dados_bd
-from graph import construir_grafo
+from fastapi.responses import JSONResponse
+from database import carregar_dados_bd, carregar_sequencias_linhas
+from graph import construir_grafo, aplicar_direcionalidade
 from a_star import encontrar_caminho_com_integracao_astar
 from utils import carregar_grafo, salvar_grafo
 import sqlite3
+from typing import Optional
 
-app = FastAPI()
-
+app = FastAPI(
+    title="Sistema de Rotas de Ônibus",
+    description="API para busca de rotas otimizadas com grafo direcional",
+    version="2.0.0"
+)
+# Pega o caminho absoluto do diretório onde este script (api.py) está
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+# Sobe um nível para o diretório pai (a raiz do projeto, 'integracao_v2')
+diretorio_pai = os.path.dirname(diretorio_atual)
 # Caminhos dos bancos de dados
-caminho_bd_roteamento = 'paradas_linhas.db'
-caminho_arquivo_grafo = 'grafo.pkl'
-caminho_bd_geojson = 'geojson_data.db'
+# Caminhos dos bancos de dados, agora apontando para a pasta correta
+caminho_bd_paradas = os.path.join(diretorio_pai, 'paradas_linhas_2025.db')
+caminho_bd_linhas = os.path.join(diretorio_pai, 'linhas_onibus.db')
+caminho_arquivo_grafo = os.path.join(diretorio_pai, 'grafo_direcional.pkl')
+caminho_bd_geojson = os.path.join(diretorio_pai, 'geojson_data.db')
 
-# Função para conectar ao banco de dados geojson
+
+# Variáveis globais para cache
+grafo = None
+paradas_disponiveis = []
+linhas_por_parada = {}
+
+
 def get_db_connection():
-    conn = sqlite3.connect(caminho_bd_geojson)
-    conn.row_factory = sqlite3.Row  # Para retornar os dados como dicionário
-    return conn
+    """Conecta ao banco de dados GeoJSON (se disponível)"""
+    try:
+        conn = sqlite3.connect(caminho_bd_geojson)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.Error:
+        return None
 
-# Carrega ou constrói o grafo na inicialização
-grafo = carregar_grafo(caminho_arquivo_grafo)
-if grafo is None:
-    paradas, linhas_de_onibus = carregar_dados_bd(caminho_bd_roteamento)
-    grafo = construir_grafo(paradas, linhas_de_onibus)
-    salvar_grafo(grafo, caminho_arquivo_grafo)
 
-# ------------------- ROTAS DE ROTEAMENTO -------------------
+def inicializar_grafo():
+    """Inicializa ou carrega o grafo direcional"""
+    global grafo, paradas_disponiveis, linhas_por_parada
+    
+    print("🚀 Inicializando sistema de rotas...")
+    
+    # Tenta carregar grafo existente
+    grafo = carregar_grafo(caminho_arquivo_grafo)
+    
+    if grafo is None:
+        print("📊 Construindo novo grafo direcional...")
+        
+        # Etapa 1: Carregar dados das paradas
+        print("  [1/4] Carregando paradas e linhas...")
+        paradas, linhas_de_onibus = carregar_dados_bd(caminho_bd_paradas)
+        paradas_disponiveis = paradas
+        linhas_por_parada = dict(linhas_de_onibus)
+        print(f"    ✓ {len(paradas)} paradas carregadas")
+        
+        # Etapa 2: Construir grafo inicial
+        print("  [2/4] Construindo grafo inicial...")
+        grafo_inicial = construir_grafo(paradas, linhas_de_onibus)
+        total_conexoes = sum(len(v) for v in grafo_inicial.values())
+        print(f"    ✓ {total_conexoes} conexões criadas")
+        
+        # Etapa 3: Carregar sequências
+        print("  [3/4] Carregando sequências das linhas...")
+        sequencias = carregar_sequencias_linhas(caminho_bd_linhas)
+        print(f"    ✓ {len(sequencias)} linhas com sequências")
+        
+        # Etapa 4: Aplicar direcionalidade
+        print("  [4/4] Aplicando direcionalidade...")
+        grafo = aplicar_direcionalidade(grafo_inicial, sequencias)
+        
+        # Salvar grafo
+        salvar_grafo(grafo, caminho_arquivo_grafo)
+        print("✅ Grafo direcional construído com sucesso!")
+    else:
+        print("✅ Grafo direcional carregado do cache")
+        
+        # Carregar dados das paradas para consultas
+        paradas, linhas_de_onibus = carregar_dados_bd(caminho_bd_paradas)
+        paradas_disponiveis = paradas
+        linhas_por_parada = dict(linhas_de_onibus)
 
-@app.get("/rotas/")
-def obter_rota(origem: int, destino: int):
+
+# Inicializa o grafo ao startar a aplicação
+@app.on_event("startup")
+async def startup_event():
+    inicializar_grafo()
+
+
+# ==================== ROTAS DA API ====================
+
+@app.get("/", tags=["Status"])
+def root():
+    """Endpoint raiz com informações da API"""
+    return {
+        "mensagem": "API de Rotas de Ônibus - Sistema Direcional",
+        "versao": "2.0.0",
+        "status": "online",
+        "total_paradas": len(paradas_disponiveis) if paradas_disponiveis else 0,
+        "documentacao": "/docs"
+    }
+
+
+@app.get("/status", tags=["Status"])
+def status():
+    """Verifica o status do sistema"""
+    return {
+        "grafo_carregado": grafo is not None,
+        "total_paradas": len(paradas_disponiveis),
+        "total_conexoes": sum(len(v) for v in grafo.values()) if grafo else 0,
+        "cache_ativo": True
+    }
+
+
+@app.get("/rotas/", tags=["Rotas"])
+def obter_rota(
+    origem: int = Query(..., description="ID da parada de origem"),
+    destino: int = Query(..., description="ID da parada de destino")
+):
+    """
+    Busca a melhor rota entre duas paradas respeitando a direção das linhas.
+    
+    - **origem**: ID da parada inicial
+    - **destino**: ID da parada final
+    
+    Retorna o caminho com linhas e pontos de integração.
+    """
+    
+    # Validação das paradas
+    if origem not in paradas_disponiveis:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parada de origem {origem} não encontrada"
+        )
+    
+    if destino not in paradas_disponiveis:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parada de destino {destino} não encontrada"
+        )
+    
+    if origem == destino:
+        raise HTTPException(
+            status_code=400,
+            detail="Origem e destino devem ser diferentes"
+        )
+    
+    # Busca a rota
     caminho = encontrar_caminho_com_integracao_astar(grafo, origem, destino)
     
     if not caminho:
-        raise HTTPException(status_code=404, detail="Nenhuma rota encontrada")
+        raise HTTPException(
+            status_code=404,
+            detail="Nenhuma rota encontrada entre as paradas informadas"
+        )
     
+    # Monta resposta detalhada
     rota_detalhada = []
     for i in range(0, len(caminho) - 1, 2):
-        rota_detalhada.append({
-            "parada_origem": caminho[i],
-            "linha": caminho[i + 1],
-            "parada_destino": caminho[i + 2] if i + 2 < len(caminho) else caminho[i]
-        })
+        if i + 2 < len(caminho):
+            rota_detalhada.append({
+                "parada_origem": caminho[i],
+                "linha": caminho[i + 1],
+                "parada_destino": caminho[i + 2]
+            })
     
-    return {"rota": rota_detalhada}
-
-@app.get("/paradas/")
-def listar_paradas():
-    paradas, linhas_de_onibus = carregar_dados_bd(caminho_bd_roteamento)
-    return {"paradas": paradas, "linhas": linhas_de_onibus}
-
-# ------------------- ROTAS DE GEOLOCALIZAÇÃO (GeoJSON) -------------------
-
-@app.get("/paradas/geo/")
-def get_dados(codDftrans: list[str] = Query(...)):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    # Identifica integrações
+    integracoes = []
+    linhas_usadas = []
     
-    # Construir a consulta SQL com múltiplos valores de codDftrans
-    query = f"SELECT * FROM geojson_data WHERE codDftrans IN ({','.join('?' * len(codDftrans))})"
-    cursor.execute(query, codDftrans)
+    for i in range(1, len(caminho), 2):
+        linha_atual = caminho[i]
+        if linha_atual not in linhas_usadas:
+            linhas_usadas.append(linha_atual)
+        
+        if i > 1 and i + 1 < len(caminho):
+            linha_anterior = caminho[i - 2]
+            if linha_atual != linha_anterior:
+                integracoes.append({
+                    "parada": caminho[i - 1],
+                    "linha_anterior": linha_anterior,
+                    "linha_nova": linha_atual
+                })
     
-    rows = cursor.fetchall()
-    conn.close()
-
-    # Se nenhum dado for encontrado, retornar erro 404
-    if not rows:
-        raise HTTPException(status_code=404, detail="Nenhuma parada encontrada")
-
-    # Montar a lista de objetos GeoJSON com os dados
-    geojson_features = []
-    for row in rows:
-        geojson = {
-            "type": "Feature",
-            "geometry": {
-                "type": "Point",
-                "coordinates": [row["longitude"], row["latitude"]]
-            },
-            "properties": {
-                "sequencial": row["sequencial"],
-                "sentido": row["sentido"],
-                "codDftrans": row["codDftrans"]
-            }
-        }
-        geojson_features.append(geojson)
+    # Calcula estatísticas
+    total_paradas = len([p for i, p in enumerate(caminho) if i % 2 == 0])
     
     return {
-        "type": "FeatureCollection",
-        "features": geojson_features
+        "status": "sucesso",
+        "origem": origem,
+        "destino": destino,
+        "rota": rota_detalhada,
+        "integracoes": integracoes,
+        "resumo": {
+            "total_paradas": total_paradas,
+            "total_linhas": len(linhas_usadas),
+            "total_integracoes": len(integracoes),
+            "linhas_utilizadas": linhas_usadas
+        }
     }
 
-# ------------------- EXECUÇÃO DO UVICORN -------------------
+
+@app.get("/paradas/", tags=["Paradas"])
+def listar_paradas(
+    limite: Optional[int] = Query(None, description="Limitar número de resultados"),
+    linha: Optional[str] = Query(None, description="Filtrar por linha específica")
+):
+    """
+    Lista todas as paradas disponíveis no sistema.
+    
+    - **limite**: Número máximo de paradas a retornar (opcional)
+    - **linha**: Filtrar paradas por linha específica (opcional)
+    """
+    
+    if linha:
+        # Filtra paradas que têm a linha especificada
+        paradas_filtradas = {
+            parada: linhas 
+            for parada, linhas in linhas_por_parada.items() 
+            if linha in linhas
+        }
+        
+        if not paradas_filtradas:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Nenhuma parada encontrada para a linha {linha}"
+            )
+        
+        resultado = list(paradas_filtradas.keys())
+    else:
+        resultado = paradas_disponiveis
+    
+    # Aplica limite se fornecido
+    if limite and limite > 0:
+        resultado = resultado[:limite]
+    
+    return {
+        "total": len(resultado),
+        "paradas": resultado
+    }
+
+
+@app.get("/paradas/{id_parada}", tags=["Paradas"])
+def detalhes_parada(id_parada: int):
+    """
+    Retorna detalhes de uma parada específica.
+    
+    - **id_parada**: ID da parada
+    """
+    
+    if id_parada not in linhas_por_parada:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parada {id_parada} não encontrada"
+        )
+    
+    linhas = linhas_por_parada[id_parada]
+    
+    # Busca conexões diretas (vizinhos)
+    conexoes = []
+    if grafo and id_parada in grafo:
+        vizinhos_unicos = {}
+        for vizinho, linha in grafo[id_parada]:
+            if vizinho not in vizinhos_unicos:
+                vizinhos_unicos[vizinho] = []
+            vizinhos_unicos[vizinho].append(linha)
+        
+        for vizinho, linhas_conexao in vizinhos_unicos.items():
+            conexoes.append({
+                "parada_destino": vizinho,
+                "linhas": linhas_conexao
+            })
+    
+    return {
+        "id_parada": id_parada,
+        "linhas": linhas,
+        "total_linhas": len(linhas),
+        "conexoes_diretas": len(conexoes),
+        "destinos_disponiveis": conexoes[:10]  # Limita a 10 para não sobrecarregar
+    }
+
+
+@app.get("/linhas/", tags=["Linhas"])
+def listar_linhas():
+    """
+    Lista todas as linhas disponíveis no sistema.
+    """
+    
+    # Extrai todas as linhas únicas
+    linhas_unicas = set()
+    for linhas in linhas_por_parada.values():
+        linhas_unicas.update(linhas)
+    
+    linhas_lista = sorted(list(linhas_unicas))
+    
+    return {
+        "total": len(linhas_lista),
+        "linhas": linhas_lista
+    }
+
+
+@app.get("/linhas/{cod_linha}", tags=["Linhas"])
+def detalhes_linha(cod_linha: str):
+    """
+    Retorna detalhes de uma linha específica.
+    
+    - **cod_linha**: Código da linha (ex: "504.1 - IDA")
+    """
+    
+    # Busca paradas que têm essa linha
+    paradas_da_linha = [
+        parada for parada, linhas in linhas_por_parada.items()
+        if cod_linha in linhas
+    ]
+    
+    if not paradas_da_linha:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Linha {cod_linha} não encontrada"
+        )
+    
+    return {
+        "linha": cod_linha,
+        "total_paradas": len(paradas_da_linha),
+        "paradas": paradas_da_linha
+    }
+
+
+@app.post("/grafo/reconstruir", tags=["Administração"])
+def reconstruir_grafo():
+    """
+    Força a reconstrução do grafo direcional.
+    
+    ⚠️ Esta operação pode levar alguns minutos.
+    """
+    
+    import os
+    
+    # Remove cache existente
+    if os.path.exists(caminho_arquivo_grafo):
+        os.remove(caminho_arquivo_grafo)
+        print(f"✓ Cache removido: {caminho_arquivo_grafo}")
+    
+    # Reconstrói
+    try:
+        inicializar_grafo()
+        return {
+            "status": "sucesso",
+            "mensagem": "Grafo reconstruído com sucesso",
+            "total_paradas": len(paradas_disponiveis),
+            "total_conexoes": sum(len(v) for v in grafo.values())
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao reconstruir grafo: {str(e)}"
+        )
+
+
+@app.get("/health", tags=["Status"])
+def health_check():
+    """Endpoint de health check para monitoramento"""
+    return {
+        "status": "healthy",
+        "grafo_disponivel": grafo is not None,
+        "paradas_carregadas": len(paradas_disponiveis) > 0
+    }
+
+
+# ==================== EXECUÇÃO ====================
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    print("\n" + "="*60)
+    print("  🚌 API DE ROTAS DE ÔNIBUS - SISTEMA DIRECIONAL")
+    print("="*60 + "\n")
+    uvicorn.run(
+        app, 
+        host="127.0.0.1", 
+        port=3000,
+        log_level="info"
+    )

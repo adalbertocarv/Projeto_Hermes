@@ -4,14 +4,10 @@ import 'package:buscareferencia/models/paradas_model.dart';
 
 class paradasService {
   static Future<List<Stop>> buscarParadas() async {
-    final url = Uri.parse("https://mobilidade.semob.df.gov.br/parada");
+    final url = Uri.parse("https://dados.semob.df.gov.br/parada/geojson");
 
     final response = await http.get(
-      url,
-      headers: {
-        'Authorization': 'Bearer kP\$7g@2n!Vx3X#wQ5^z',
-        'Content-Type': 'application/json',
-      },
+      url
     );
 
     if (response.statusCode == 200) {
