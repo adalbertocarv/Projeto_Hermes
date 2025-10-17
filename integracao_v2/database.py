@@ -1,63 +1,93 @@
-import sqlite3
 from collections import defaultdict
+import psycopg2
 
-def carregar_dados_bd(caminho_bd):
-    """Carrega paradas e linhas do paradas_linhas_2025.db"""
-    conn = sqlite3.connect(caminho_bd)
+
+POSTGIS = {
+    "user": "adalberto_junior",
+    "password": "348PPJDRDF0F@",
+    "host": "10.233.46.51",
+    "port": 5432,
+    "database": "bdg"
+}
+
+
+def conectar_postgis(config=POSTGIS):
+    """Cria e retorna uma conexão com o banco PostgreSQL/PostGIS"""
+    try:
+        conn = psycopg2.connect(
+            user=config["user"],
+            password=config["password"],
+            host=config["host"],
+            port=config["port"],
+            database=config["database"]
+        )
+        return conn
+    except Exception as e:
+        raise ConnectionError(f"Erro ao conectar ao banco PostGIS: {e}")
+
+
+def carregar_dados_postgis(config=POSTGIS):
+    """
+    Carrega paradas e linhas da tabela tab_linha_parada no banco PostgreSQL.
+    Retorna uma lista de paradas e um dicionário com as linhas por parada.
+    """
+    conn = conectar_postgis(config)
     cursor = conn.cursor()
-    
+
     paradas = []
     linhas_de_onibus = defaultdict(list)
-    
-    cursor.execute('SELECT id_ponto_parada, linhas FROM tab_linha_parada')
-    for row in cursor.fetchall():
-        id_ponto_parada = row[0]
-        linhas_str = row[1]
-        
-        if linhas_str:
-            linhas = linhas_str.split(', ')
-            linhas_de_onibus[id_ponto_parada].extend(linhas)
-        
-        paradas.append(id_ponto_parada)
-    
-    conn.close()
+
+    try:
+        cursor.execute('SELECT id_ponto_parada, linhas FROM linha_sentido_parada.tab_linhas_paradas_v1')
+        for id_ponto_parada, linhas_str in cursor.fetchall():
+            if linhas_str:
+                # Suporta formatos: "123, 456" ou "123,456"
+                linhas = [l.strip() for l in linhas_str.split(',')]
+                linhas_de_onibus[id_ponto_parada].extend(linhas)
+            paradas.append(id_ponto_parada)
+    except Exception as e:
+        print(f"Erro ao carregar paradas e linhas: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
     return paradas, linhas_de_onibus
 
 
-def carregar_sequencias_linhas(caminho_bd):
-    """Carrega as sequências de paradas de cada linha do linhas_onibus.db"""
-    conn = sqlite3.connect(caminho_bd)
+def carregar_sequencias_linhas_postgis(config=POSTGIS):
+    """
+    Carrega as sequências de paradas por linha da tabela 
+    linha_sentido_parada.tab_paradas_linhas_seq_v1 no banco PostgreSQL.
+    Retorna um dicionário { 'cod_linha - sentido': [lista de paradas] }.
+    """
+    conn = conectar_postgis(config)
     cursor = conn.cursor()
-    
+
     sequencias = {}
-    
-    # Assume que a tabela tem: id, cod_linha, sentido, paradas
-    cursor.execute('SELECT cod_linha, sentido, paradas FROM tab_paradas_linhas_seq')
-    
-    for row in cursor.fetchall():
-        cod_linha = row[0]
-        sentido = row[1]
-        paradas_str = row[2]
-        
-        # Cria identificador único linha + sentido
-        linha_id = f"{cod_linha} - {sentido}"
-        
-        # Converte string de paradas para lista de inteiros
-        if paradas_str:
-            # Tenta diferentes formatos possíveis
-            try:
-                # Formato: "2466, 2465, 2470" ou "2466,2465,2470"
-                paradas = [int(p.strip()) for p in paradas_str.split(',')]
-            except ValueError:
-                # Formato alternativo (JSON, etc)
-                import json
+
+    try:
+        cursor.execute("""
+            SELECT cod_linha, sentido, paradas 
+            FROM linha_sentido_parada.tab_paradas_linhas_seq_v1
+        """)
+        for cod_linha, sentido, paradas_array in cursor.fetchall():
+            linha_id = f"{cod_linha} - {sentido}"
+
+            # paradas_array já é uma lista de inteiros
+            if isinstance(paradas_array, list):
+                sequencias[linha_id] = [int(p) for p in paradas_array]
+            else:
+                # fallback: se vier como string (situação rara)
                 try:
-                    paradas = json.loads(paradas_str)
-                except:
-                    print(f"Aviso: Não foi possível processar paradas da linha {linha_id}")
+                    sequencias[linha_id] = [int(p.strip()) for p in str(paradas_array).split(',')]
+                except Exception:
+                    print(f"Aviso: não foi possível processar paradas da linha {linha_id}")
                     continue
-            
-            sequencias[linha_id] = paradas
-    
-    conn.close()
+
+    except Exception as e:
+        print(f"Erro ao carregar sequências das linhas: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
     return sequencias
