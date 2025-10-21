@@ -11,44 +11,29 @@ sys.path.append(parent_dir)
 # AGORA as importações de módulos na pasta pai vão funcionar
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-from database import carregar_dados_bd, carregar_sequencias_linhas
+from database import carregar_dados_postgis, carregar_sequencias_linhas_postgis
 from graph import construir_grafo, aplicar_direcionalidade
 from a_star import encontrar_caminho_com_integracao_astar
 from utils import carregar_grafo, salvar_grafo
-import sqlite3
 from typing import Optional
 
 app = FastAPI(
     title="Sistema de Rotas de Ônibus",
-    description="API para busca de rotas otimizadas com grafo direcional",
+    description="API para busca de rotas otimizadas com grafo direcional (PostgreSQL)",
     version="2.0.0"
 )
+
 # Pega o caminho absoluto do diretório onde este script (api.py) está
 diretorio_atual = os.path.dirname(os.path.abspath(__file__))
 # Sobe um nível para o diretório pai (a raiz do projeto, 'integracao_v2')
 diretorio_pai = os.path.dirname(diretorio_atual)
-# Caminhos dos bancos de dados
-# Caminhos dos bancos de dados, agora apontando para a pasta correta
-caminho_bd_paradas = os.path.join(diretorio_pai, 'paradas_linhas_2025.db')
-caminho_bd_linhas = os.path.join(diretorio_pai, 'linhas_onibus.db')
+# Caminho do arquivo de cache do grafo
 caminho_arquivo_grafo = os.path.join(diretorio_pai, 'grafo_direcional.pkl')
-caminho_bd_geojson = os.path.join(diretorio_pai, 'geojson_data.db')
-
 
 # Variáveis globais para cache
 grafo = None
 paradas_disponiveis = []
 linhas_por_parada = {}
-
-
-def get_db_connection():
-    """Conecta ao banco de dados GeoJSON (se disponível)"""
-    try:
-        conn = sqlite3.connect(caminho_bd_geojson)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except sqlite3.Error:
-        return None
 
 
 def inicializar_grafo():
@@ -63,9 +48,9 @@ def inicializar_grafo():
     if grafo is None:
         print("📊 Construindo novo grafo direcional...")
         
-        # Etapa 1: Carregar dados das paradas
-        print("  [1/4] Carregando paradas e linhas...")
-        paradas, linhas_de_onibus = carregar_dados_bd(caminho_bd_paradas)
+        # Etapa 1: Carregar dados das paradas (PostgreSQL)
+        print("  [1/4] Carregando paradas e linhas (PostgreSQL)...")
+        paradas, linhas_de_onibus = carregar_dados_postgis()
         paradas_disponiveis = paradas
         linhas_por_parada = dict(linhas_de_onibus)
         print(f"    ✓ {len(paradas)} paradas carregadas")
@@ -76,9 +61,9 @@ def inicializar_grafo():
         total_conexoes = sum(len(v) for v in grafo_inicial.values())
         print(f"    ✓ {total_conexoes} conexões criadas")
         
-        # Etapa 3: Carregar sequências
-        print("  [3/4] Carregando sequências das linhas...")
-        sequencias = carregar_sequencias_linhas(caminho_bd_linhas)
+        # Etapa 3: Carregar sequências (PostgreSQL)
+        print("  [3/4] Carregando sequências das linhas (PostgreSQL)...")
+        sequencias = carregar_sequencias_linhas_postgis()
         print(f"    ✓ {len(sequencias)} linhas com sequências")
         
         # Etapa 4: Aplicar direcionalidade
@@ -91,8 +76,8 @@ def inicializar_grafo():
     else:
         print("✅ Grafo direcional carregado do cache")
         
-        # Carregar dados das paradas para consultas
-        paradas, linhas_de_onibus = carregar_dados_bd(caminho_bd_paradas)
+        # Carregar dados das paradas para consultas (mesmo com cache do grafo)
+        paradas, linhas_de_onibus = carregar_dados_postgis()
         paradas_disponiveis = paradas
         linhas_por_parada = dict(linhas_de_onibus)
 
@@ -109,7 +94,7 @@ async def startup_event():
 def root():
     """Endpoint raiz com informações da API"""
     return {
-        "mensagem": "API de Rotas de Ônibus - Sistema Direcional",
+        "mensagem": "API de Rotas de Ônibus - Sistema Direcional (PostgreSQL)",
         "versao": "2.0.0",
         "status": "online",
         "total_paradas": len(paradas_disponiveis) if paradas_disponiveis else 0,
@@ -124,7 +109,8 @@ def status():
         "grafo_carregado": grafo is not None,
         "total_paradas": len(paradas_disponiveis),
         "total_conexoes": sum(len(v) for v in grafo.values()) if grafo else 0,
-        "cache_ativo": True
+        "cache_ativo": True,
+        "fonte_dados": "PostgreSQL"
     }
 
 
@@ -320,7 +306,7 @@ def detalhes_linha(cod_linha: str):
     """
     Retorna detalhes de uma linha específica.
     
-    - **cod_linha**: Código da linha (ex: "504.1 - IDA")
+    - **cod_linha**: Código da linha (ex: "504.1")
     """
     
     # Busca paradas que têm essa linha
@@ -350,8 +336,6 @@ def reconstruir_grafo():
     ⚠️ Esta operação pode levar alguns minutos.
     """
     
-    import os
-    
     # Remove cache existente
     if os.path.exists(caminho_arquivo_grafo):
         os.remove(caminho_arquivo_grafo)
@@ -379,7 +363,8 @@ def health_check():
     return {
         "status": "healthy",
         "grafo_disponivel": grafo is not None,
-        "paradas_carregadas": len(paradas_disponiveis) > 0
+        "paradas_carregadas": len(paradas_disponiveis) > 0,
+        "fonte_dados": "PostgreSQL"
     }
 
 
@@ -389,6 +374,7 @@ if __name__ == "__main__":
     import uvicorn
     print("\n" + "="*60)
     print("  🚌 API DE ROTAS DE ÔNIBUS - SISTEMA DIRECIONAL")
+    print("  📡 Fonte de dados: PostgreSQL")
     print("="*60 + "\n")
     uvicorn.run(
         app, 
