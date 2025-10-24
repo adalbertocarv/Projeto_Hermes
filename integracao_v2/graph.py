@@ -16,7 +16,6 @@ def construir_grafo(paradas, linhas_de_onibus):
 def validar_conexao_direcional(parada_origem, parada_destino, linha, sequencias):
     """Verifica se a conexão é válida respeitando a direção da linha"""
     if linha not in sequencias:
-        # Se não temos informação da sequência, não valida
         return False
     
     sequencia = sequencias[linha]
@@ -24,12 +23,8 @@ def validar_conexao_direcional(parada_origem, parada_destino, linha, sequencias)
     try:
         idx_origem = sequencia.index(parada_origem)
         idx_destino = sequencia.index(parada_destino)
-        
-        # Válido apenas se destino vem DEPOIS da origem
         return idx_destino > idx_origem
-        
     except ValueError:
-        # Uma das paradas não está na sequência desta linha
         return False
 
 
@@ -43,12 +38,43 @@ def aplicar_direcionalidade(grafo, sequencias):
     for parada_origem, conexoes in grafo.items():
         for parada_destino, linha in conexoes:
             if validar_conexao_direcional(parada_origem, parada_destino, linha, sequencias):
-                grafo_direcional[parada_origem].append((parada_destino, linha))
+                # Formato: (destino, tipo_conexao, identificador, custo)
+                # Para ônibus: custo baseado em número de paradas (estimativa)
+                grafo_direcional[parada_origem].append((parada_destino, 'onibus', linha, 10))
                 arestas_mantidas += 1
             else:
                 arestas_removidas += 1
     
-    print(f"  Arestas mantidas: {arestas_mantidas}")
-    print(f"  Arestas removidas: {arestas_removidas}")
+    print(f"  Arestas de ônibus mantidas: {arestas_mantidas}")
+    print(f"  Arestas de ônibus removidas: {arestas_removidas}")
     
     return grafo_direcional
+
+
+def adicionar_conexoes_caminhada(grafo, paradas_proximas):
+    """
+    Adiciona conexões de caminhada ao grafo.
+    
+    Formato da aresta de caminhada:
+    (parada_destino, 'caminhada', distancia_metros, custo)
+    
+    Custo de caminhada = distancia / 100 (cada 100m = 1 ponto de custo)
+    Isso torna caminhada mais atrativa que pegar múltiplas linhas.
+    """
+    conexoes_adicionadas = 0
+    
+    for parada_origem, vizinhos in paradas_proximas.items():
+        for parada_destino, distancia in vizinhos:
+            # Custo proporcional à distância
+            # Cada 100m de caminhada = 1 ponto
+            # Isso é mais barato que pegar ônibus (custo 10) para distâncias curtas
+            custo_caminhada = max(1, distancia / 100)
+            
+            # Adiciona conexão bidirecional de caminhada
+            grafo[parada_origem].append((parada_destino, 'caminhada', f'{distancia}m', custo_caminhada))
+            grafo[parada_destino].append((parada_origem, 'caminhada', f'{distancia}m', custo_caminhada))
+            conexoes_adicionadas += 2
+    
+    print(f"  Conexões de caminhada adicionadas: {conexoes_adicionadas}")
+    
+    return grafo
