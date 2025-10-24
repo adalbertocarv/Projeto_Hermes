@@ -1,6 +1,6 @@
 from database import carregar_dados_com_geolocalizacao
 from graph import construir_grafo_completo, aplicar_direcionalidade
-from a_star import encontrar_caminho_com_caminhadas, encontrar_linha_mais_direta, formatar_caminho
+from a_star import encontrar_multiplos_caminhos, encontrar_linha_mais_direta, formatar_multiplos_caminhos, formatar_analise_detalhada
 from utils import salvar_grafo, carregar_grafo
 import time
 
@@ -9,6 +9,7 @@ def main():
     
     print("=" * 60)
     print("🚀 SISTEMA DE BUSCA DE ROTAS COM CAMINHADAS")
+    print("🎯 AGORA COM MÚLTIPLAS ROTAS ORDENADAS")
     print("=" * 60)
     
     # Carrega grafo existente ou constrói novo
@@ -59,20 +60,29 @@ def main():
             if origem in grafo:
                 linha_direta, num_paradas = encontrar_linha_mais_direta(grafo, sequencias, origem, destino)
                 if linha_direta:
-                    print(f"✅ LINHA DIRETA: {linha_direta} ({num_paradas} paradas)")
+                    print(f"✅ LINHA DIRETA ENCONTRADA: {linha_direta} ({num_paradas} paradas)")
             
-            # Busca com caminhadas
-            print("🔄 Buscando rota (considerando caminhadas)...")
+            # Busca múltiplos caminhos com caminhadas
+            print("🔄 Buscando múltiplas rotas (considerando caminhadas)...")
             start_time = time.time()
             
-            caminho = encontrar_caminho_com_caminhadas(grafo, coordenadas_paradas, origem, destino)
+            caminhos = encontrar_multiplos_caminhos(grafo, coordenadas_paradas, origem, destino, max_caminhos=3)
             end_time = time.time()
             
-            if caminho:
-                print(f"\n✅ ROTA ENCONTRADA ({end_time - start_time:.2f}s)")
-                print("=" * 50)
-                print(formatar_caminho(caminho))
-                print("=" * 50)
+            if caminhos:
+                print(f"\n✅ {len(caminhos)} ROTAS ENCONTRADAS ({end_time - start_time:.2f}s)")
+                print(formatar_multiplos_caminhos(caminhos))
+                print("=" * 60)
+                
+                # Oferece opção para ver mais detalhes
+                if len(caminhos) > 1:
+                    try:
+                        escolha = input("\nDeseja ver detalhes de uma rota específica? (1-{} ou Enter para continuar): ".format(len(caminhos)))
+                        if escolha.isdigit() and 1 <= int(escolha) <= len(caminhos):
+                            rota_escolhida = caminhos[int(escolha)-1]
+                            print(formatar_analise_detalhada(rota_escolhida, escolha))
+                    except:
+                        pass
             else:
                 print("\n❌ Nenhum caminho encontrado")
                 
