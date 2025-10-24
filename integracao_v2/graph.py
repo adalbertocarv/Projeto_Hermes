@@ -1,54 +1,66 @@
 from collections import defaultdict
 
-def construir_grafo(paradas, linhas_de_onibus):
-    """Constrói grafo inicial com todas as conexões possíveis via linhas em comum"""
+def construir_grafo_completo_rapido(paradas, linhas_de_onibus):
+    """Constrói grafo completo de forma ULTRA rápida"""
     grafo = defaultdict(list)
     
-    for parada in paradas:
-        for linha in linhas_de_onibus[parada]:
-            for vizinha in paradas:
-                if linha in linhas_de_onibus[vizinha] and vizinha != parada:
-                    grafo[parada].append((vizinha, linha))
+    print("Construindo grafo completo (versão turbo)...")
     
+    # ETAPA 1: Inverter o mapeamento
+    linha_para_paradas = defaultdict(list)
+    for parada, linhas in linhas_de_onibus.items():
+        for linha in linhas:
+            linha_para_paradas[linha].append(parada)
+    
+    print(f"  {len(linha_para_paradas)} linhas únicas")
+    
+    # ETAPA 2: Conectar paradas de forma otimizada
+    total_conexoes = 0
+    for linha, paradas_da_linha in linha_para_paradas.items():
+        n = len(paradas_da_linha)
+        # Conectar cada parada com todas as outras da mesma linha
+        for i in range(n):
+            origem = paradas_da_linha[i]
+            for j in range(n):
+                if i != j:
+                    destino = paradas_da_linha[j]
+                    grafo[origem].append((destino, linha))
+                    total_conexoes += 1
+    
+    print(f"✅ Grafo completo: {len(grafo)} paradas, {total_conexoes} conexões")
     return grafo
 
-
-def validar_conexao_direcional(parada_origem, parada_destino, linha, sequencias):
-    """Verifica se a conexão é válida respeitando a direção da linha"""
-    if linha not in sequencias:
-        # Se não temos informação da sequência, não valida
-        return False
+def aplicar_direcionalidade_rapida(grafo_completo, sequencias):
+    """Versão otimizada da direcionalidade"""
+    print("Aplicando direcionalidade (versão rápida)...")
     
-    sequencia = sequencias[linha]
-    
-    try:
-        idx_origem = sequencia.index(parada_origem)
-        idx_destino = sequencia.index(parada_destino)
-        
-        # Válido apenas se destino vem DEPOIS da origem
-        return idx_destino > idx_origem
-        
-    except ValueError:
-        # Uma das paradas não está na sequência desta linha
-        return False
-
-
-def aplicar_direcionalidade(grafo, sequencias):
-    """Filtra o grafo mantendo apenas arestas válidas direcionalmente"""
     grafo_direcional = defaultdict(list)
+    total_processadas = 0
     
-    arestas_removidas = 0
-    arestas_mantidas = 0
+    # Pré-computar índices para validação mais rápida
+    cache_indices = {}
     
-    for parada_origem, conexoes in grafo.items():
+    for parada_origem, conexoes in grafo_completo.items():
         for parada_destino, linha in conexoes:
-            if validar_conexao_direcional(parada_origem, parada_destino, linha, sequencias):
-                grafo_direcional[parada_origem].append((parada_destino, linha))
-                arestas_mantidas += 1
-            else:
-                arestas_removidas += 1
+            total_processadas += 1
+            
+            # Usar cache para validação mais rápida
+            if linha not in cache_indices:
+                if linha in sequencias:
+                    # Criar dicionário de índices para acesso O(1)
+                    seq = sequencias[linha]
+                    cache_indices[linha] = {parada: idx for idx, parada in enumerate(seq)}
+                else:
+                    cache_indices[linha] = None
+            
+            indices = cache_indices[linha]
+            if indices and parada_origem in indices and parada_destino in indices:
+                if indices[parada_destino] > indices[parada_origem]:
+                    grafo_direcional[parada_origem].append((parada_destino, linha))
     
-    print(f"  Arestas mantidas: {arestas_mantidas}")
-    print(f"  Arestas removidas: {arestas_removidas}")
-    
+    print(f"✅ Grafo direcional: {len(grafo_direcional)} paradas")
     return grafo_direcional
+
+# Para manter compatibilidade
+construir_grafo_completo = construir_grafo_completo_rapido
+aplicar_direcionalidade = aplicar_direcionalidade_rapida
