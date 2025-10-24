@@ -217,14 +217,220 @@ def reconstruir_grafo(raio_caminhada: int = Query(200, description="Raio de cami
         raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
 
 
+@app.get("/status", tags=["Status"])
+def status():
+    """Verifica o status do sistema"""
+    return {
+        "grafo_carregado": grafo is not None,
+        "total_paradas": len(paradas_disponiveis),
+        "total_conexoes": sum(len(v) for v in grafo.values()) if grafo else 0,
+        "cache_ativo": True,
+        "fonte_dados": "PostgreSQL",
+        "funcionalidade_caminhada": "ativa"
+    }
+
+
+@app.get("/paradas/", tags=["Paradas"])
+def listar_paradas(
+    limite: Optional[int] = Query(None, description="Limitar número de resultados"),
+    linha: Optional[str] = Query(None, description="Filtrar por linha específica")
+):
+    """
+    Lista todas as paradas disponíveis no sistema.
+    
+    - **limite**: Número máximo de paradas a retornar (opcional)
+    - **linha**: Filtrar paradas por linha específica (opcional)
+    """
+    
+    if linha:
+        # Filtra paradas que têm a linha especificada
+        paradas_filtradas = {
+            parada: linhas 
+            for parada, linhas in linhas_por_parada.items() 
+            if linha in linhas
+        }
+        
+        if not paradas_filtradas:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Nenhuma parada encontrada para a linha {linha}"
+            )
+        
+        resultado = list(paradas_filtradas.keys())
+    else:
+        resultado = paradas_disponiveis
+    
+    # Aplica limite se fornecido
+    if limite and limite > 0:
+        resultado = resultado[:limite]
+    
+    return {
+        "total": len(resultado),
+        "paradas": resultado
+    }
+
+
+@app.get("/paradas/{id_parada}", tags=["Paradas"])
+def detalhes_parada(id_parada: int):
+    """
+    Retorna detalhes de uma parada específica.
+    
+    - **id_parada**: ID da parada
+    """
+    
+    if id_parada not in linhas_por_parada:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parada {id_parada} não encontrada"
+        )
+    
+    linhas = linhas_por_parada[id_parada]
+    
+    # Busca conexões diretas (vizinhos)
+    conexoes_onibus = []
+    conexoes_caminhada = []
+    
+    if grafo and id_parada in grafo:
+        vizinhos_onibus = {}
+        
+        for vizinho, tipo_transporte, identificador, custo in grafo[id_parada]:
+            if tipo_transporte == 'onibus':
+                if vizinho not in vizinhos_onibus:
+                    vizinhos_onibus[vizinho] = []
+                vizinhos_onibus[vizinho].append(identificador)
+            elif tipo_transporte == 'caminhada':
+                conexoes_caminhada.append({
+                    "parada_destino": vizinho,
+                    "distancia": identificador,
+                    "custo": round(custo, 2)
+                })
+        
+        for vizinho, linhas_conexao in vizinhos_onibus.items():
+            conexoes_onibus.append({
+                "parada_destino": vizinho,
+                "linhas": linhas_conexao
+            })
+    
+    # Informações geográficas se disponíveis
+    info_geo = paradas_geo.get(id_parada, {})
+    
+    return {
+        "id_parada": id_parada,
+        "linhas": linhas,
+        "total_linhas": len(linhas),
+        "endereco": info_geo.get('endereco'),
+        "latitude": info_geo.get('lat'),
+        "longitude": info_geo.get('lon'),
+        "conexoes_onibus": len(conexoes_onibus),
+        "conexoes_caminhada": len(conexoes_caminhada),
+        "destinos_onibus": conexoes_onibus[:10],  # Limita a 10
+        "destinos_caminhada": conexoes_caminhada[:10]  # Limita a 10
+    }
+
+
+@app.get("/linhas/", tags=["Linhas"])
+def listar_linhas():
+    """
+    Lista todas as linhas disponíveis no sistema.
+    """
+    
+    # Extrai todas as linhas únicas
+    linhas_unicas = set()
+    for linhas in linhas_por_parada.values():
+        linhas_unicas.update(linhas)
+    
+    linhas_lista = sorted(list(linhas_unicas))
+    
+    return {
+        "total": len(linhas_lista),
+        "linhas": linhas_lista
+    }
+
+
+@app.get("/linhas/{cod_linha}", tags=["Linhas"])
+def detalhes_linha(cod_linha: str):
+    """
+    Retorna detalhes de uma linha específica.
+    
+    - **cod_linha**: Código da linha (ex: "504.1 - IDA")
+    """
+    
+    # Busca paradas que têm essa linha
+    paradas_da_linha = [
+        parada for parada, linhas in linhas_por_parada.items()
+        if cod_linha in linhas
+    ]
+    
+    if not paradas_da_linha:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Linha {cod_linha} não encontrada"
+        )
+    
+    return {
+        "linha": cod_linha,
+        "total_paradas": len(paradas_da_linha),
+        "paradas": paradas_da_linha
+    }
+
+
+@app.get("/paradas/{id_parada}/proximas", tags=["Paradas"])
+def paradas_proximas_caminhada(id_parada: int, raio: Optional[int] = Query(200, description="Raio em metros")):
+    """
+    Retorna paradas próximas acessíveis por caminhada.
+    
+    - **id_parada**: ID da parada de origem
+    - **raio**: Raio máximo em metros (padrão: 200m)
+    """
+    
+    if id_parada not in paradas_disponiveis:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Parada {id_parada} não encontrada"
+        )
+    
+    proximas = []
+    
+    if grafo and id_parada in grafo:
+        for vizinho, tipo_transporte, identificador, custo in grafo[id_parada]:
+            if tipo_transporte == 'caminhada':
+                # Extrai distância em metros
+                distancia_str = identificador.replace('m', '')
+                try:
+                    distancia = float(distancia_str)
+                    if distancia <= raio:
+                        info_geo = paradas_geo.get(vizinho, {})
+                        proximas.append({
+                            "parada_id": vizinho,
+                            "distancia_metros": distancia,
+                            "endereco": info_geo.get('endereco'),
+                            "latitude": info_geo.get('lat'),
+                            "longitude": info_geo.get('lon')
+                        })
+                except ValueError:
+                    pass
+    
+    # Ordena por distância
+    proximas.sort(key=lambda x: x['distancia_metros'])
+    
+    return {
+        "parada_origem": id_parada,
+        "raio_busca": raio,
+        "total_encontradas": len(proximas),
+        "paradas_proximas": proximas
+    }
+
+
 @app.get("/health", tags=["Status"])
 def health_check():
+    """Endpoint de health check para monitoramento"""
     return {
         "status": "healthy",
         "grafo_disponivel": grafo is not None,
         "paradas_carregadas": len(paradas_disponiveis) > 0,
         "geometrias_carregadas": len(paradas_geo) > 0,
-        "funcionalidade_caminhada": "ativa"
+        "funcionalidade_caminhada": "ativa",
+        "fonte_dados": "PostgreSQL"
     }
 
 
