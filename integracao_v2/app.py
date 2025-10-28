@@ -8,8 +8,8 @@ import json
 pg_conn = psycopg2.connect(
     host="10.233.46.51",
     dbname="bdg",
-    user="adalberto_junior",
-    password="senh@",
+    user="ana_fialho",
+    password="Se654c$0",
     port=5432
 )
 pg_cur = pg_conn.cursor()
