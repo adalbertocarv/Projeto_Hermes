@@ -5,112 +5,117 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Path
 from fastapi.responses import JSONResponse
-from database import (
-    carregar_dados_postgis, 
-    carregar_sequencias_linhas_postgis,
-    buscar_paradas_proximas,
-    carregar_paradas_com_geometria
+from contextlib import asynccontextmanager
+from database import carregar_dados_com_geolocalizacao
+from graph import construir_grafo_completo, aplicar_direcionalidade
+from a_star import (
+    encontrar_multiplos_caminhos,
+    encontrar_linha_mais_direta,
+    analisar_custo_caminho,
+    calcular_custo_total_caminho,
+    contar_trocas_linha
 )
-from graph import (
-    construir_grafo, 
-    aplicar_direcionalidade,
-    adicionar_conexoes_caminhada
-)
-from a_star import encontrar_caminho_com_integracao_astar
 from utils import carregar_grafo, salvar_grafo
 from typing import Optional
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    inicializar_grafo()
+    yield
+    # Shutdown (se necessário)
 
 app = FastAPI(
     title="Sistema de Rotas de Ônibus com Caminhada",
     description="API para busca de rotas otimizadas com grafo direcional e conexões de caminhada (PostgreSQL)",
-    version="3.0.0"
+    version="4.0.0",
+    lifespan=lifespan
 )
 
 diretorio_atual = os.path.dirname(os.path.abspath(__file__))
 diretorio_pai = os.path.dirname(diretorio_atual)
-caminho_arquivo_grafo = os.path.join(diretorio_pai, 'grafo_com_caminhada.pkl')
+caminho_arquivo_grafo = os.path.join(diretorio_pai, 'grafo_direcional_com_caminhada.pkl')
 
 # Variáveis globais
 grafo = None
 paradas_disponiveis = []
 linhas_por_parada = {}
-paradas_geo = {}
+sequencias = {}
+linhas_info = {}
+coordenadas_paradas = {}
 
 
-def inicializar_grafo(raio_caminhada=200):
+def inicializar_grafo():
     """Inicializa ou carrega o grafo com conexões de caminhada"""
-    global grafo, paradas_disponiveis, linhas_por_parada, paradas_geo
+    global grafo, paradas_disponiveis, linhas_por_parada, sequencias, linhas_info, coordenadas_paradas
     
     print("🚀 Inicializando sistema de rotas com caminhada...")
+    
+    # SEMPRE carrega dados geográficos
+    print("📊 Carregando dados do PostgreSQL...")
+    paradas, linhas_por_parada, sequencias, linhas_info, coordenadas_paradas = carregar_dados_com_geolocalizacao()
+    paradas_disponiveis = paradas
+    
+    if not paradas:
+        print("❌ Erro: Não foi possível carregar dados do banco.")
+        return
+    
+    print(f"    ✓ {len(paradas)} paradas carregadas")
+    print(f"    ✓ {len(sequencias)} linhas com sequências")
+    print(f"    ✓ {len(coordenadas_paradas)} paradas com coordenadas")
     
     # Tenta carregar cache
     grafo = carregar_grafo(caminho_arquivo_grafo)
     
     if grafo is None:
-        print("📊 Construindo novo grafo com caminhada...")
+        print("🔄 Construindo novo grafo direcional...")
         
-        # [1] Carregar paradas e linhas
-        print("  [1/6] Carregando paradas e linhas...")
-        paradas, linhas_de_onibus = carregar_dados_postgis()
-        paradas_disponiveis = paradas
-        linhas_por_parada = dict(linhas_de_onibus)
-        print(f"    ✓ {len(paradas)} paradas carregadas")
+        # [1] Construir grafo completo
+        print("  [1/2] Construindo grafo completo...")
+        grafo_completo = construir_grafo_completo(paradas, linhas_por_parada)
+        print(f"    ✓ {sum(len(v) for v in grafo_completo.values())} conexões totais")
         
-        # [2] Construir grafo inicial (só ônibus)
-        print("  [2/6] Construindo grafo inicial...")
-        grafo_inicial = construir_grafo(paradas, linhas_de_onibus)
-        print(f"    ✓ {sum(len(v) for v in grafo_inicial.values())} conexões de ônibus")
-        
-        # [3] Carregar sequências
-        print("  [3/6] Carregando sequências das linhas...")
-        sequencias = carregar_sequencias_linhas_postgis()
-        print(f"    ✓ {len(sequencias)} linhas com sequências")
-        
-        # [4] Aplicar direcionalidade
-        print("  [4/6] Aplicando direcionalidade...")
-        grafo = aplicar_direcionalidade(grafo_inicial, sequencias)
-        
-        # [5] Carregar geometrias
-        print("  [5/6] Carregando geometrias das paradas...")
-        paradas_geo = carregar_paradas_com_geometria()
-        
-        # [6] Adicionar conexões de caminhada
-        print(f"  [6/6] Buscando paradas próximas (raio: {raio_caminhada}m)...")
-        paradas_proximas = buscar_paradas_proximas(raio_metros=raio_caminhada)
-        grafo = adicionar_conexoes_caminhada(grafo, paradas_proximas)
+        # [2] Aplicar direcionalidade
+        print("  [2/2] Aplicando direcionalidade...")
+        grafo = aplicar_direcionalidade(grafo_completo, sequencias)
+        print(f"    ✓ {sum(len(v) for v in grafo.values())} conexões direcionais")
         
         # Salvar
         salvar_grafo(grafo, caminho_arquivo_grafo)
-        print("✅ Grafo com caminhada construído com sucesso!")
+        print("✅ Grafo direcional construído com sucesso!")
     else:
         print("✅ Grafo carregado do cache")
-        paradas, linhas_de_onibus = carregar_dados_postgis()
-        paradas_disponiveis = paradas
-        linhas_por_parada = dict(linhas_de_onibus)
-        paradas_geo = carregar_paradas_com_geometria()
 
 
-@app.on_event("startup")
-async def startup_event():
-    inicializar_grafo(raio_caminhada=200)
+diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+diretorio_pai = os.path.dirname(diretorio_atual)
+caminho_arquivo_grafo = os.path.join(diretorio_pai, 'grafo_direcional_com_caminhada.pkl')
 
-
-# ==================== ROTAS DA API ====================
+# Variáveis globais
+grafo = None
+paradas_disponiveis = []
+linhas_por_parada = {}
+sequencias = {}
+linhas_info = {}
+coordenadas_paradas = {}
 
 @app.get("/", tags=["Status"])
 def root():
     return {
         "mensagem": "API de Rotas de Ônibus com Caminhada",
-        "versao": "3.0.0",
+        "versao": "4.0.0",
         "status": "online",
         "funcionalidades": [
             "Rotas com ônibus (direcionais)",
-            "Caminhada entre paradas (até 200m)",
-            "Otimização para priorizar caminhada"
+            "Caminhada entre paradas (até 400m)",
+            "Múltiplas rotas ordenadas por eficiência",
+            "Análise detalhada de custos",
+            "Otimização A* com heurística geográfica"
         ],
         "total_paradas": len(paradas_disponiveis) if paradas_disponiveis else 0,
+        "paradas_com_coordenadas": len(coordenadas_paradas) if coordenadas_paradas else 0,
         "documentacao": "/docs"
     }
 
@@ -118,100 +123,229 @@ def root():
 @app.get("/rotas/", tags=["Rotas"])
 def obter_rota(
     origem: int = Query(..., description="ID da parada de origem"),
-    destino: int = Query(..., description="ID da parada de destino")
+    destino: int = Query(..., description="ID da parada de destino"),
+    max_rotas: int = Query(3, description="Número máximo de rotas a retornar (1-5)", ge=1, le=5),
+    raio_caminhada: int = Query(400, description="Raio máximo de caminhada em metros", ge=100, le=1000)
 ):
     """
-    Busca a melhor rota entre duas paradas.
+    Busca as melhores rotas entre duas paradas.
     
-    O algoritmo prioriza:
-    1. Caminhadas curtas (até 200m)
+    O algoritmo usa A* com heurística geográfica e prioriza:
+    1. Caminhadas curtas (custo muito baixo)
     2. Rotas diretas sem troca
     3. Menor número de integrações
+    
+    Retorna múltiplas rotas ordenadas por eficiência (custo total).
     """
     
-    if origem not in paradas_disponiveis:
+    # Validações
+    if origem not in paradas_disponiveis and origem not in coordenadas_paradas:
         raise HTTPException(status_code=404, detail=f"Parada {origem} não encontrada")
     
-    if destino not in paradas_disponiveis:
+    if destino not in paradas_disponiveis and destino not in coordenadas_paradas:
         raise HTTPException(status_code=404, detail=f"Parada {destino} não encontrada")
     
     if origem == destino:
         raise HTTPException(status_code=400, detail="Origem e destino devem ser diferentes")
     
-    # Busca rota
-    caminho = encontrar_caminho_com_integracao_astar(grafo, origem, destino)
+    # Verifica linha direta
+    linha_direta = None
+    num_paradas_direta = None
+    if origem in grafo:
+        linha_direta, num_paradas_direta = encontrar_linha_mais_direta(grafo, sequencias, origem, destino)
     
-    if not caminho:
+    # Busca múltiplos caminhos
+    caminhos = encontrar_multiplos_caminhos(
+        grafo, 
+        coordenadas_paradas, 
+        origem, 
+        destino, 
+        raio_caminhada=raio_caminhada,
+        max_caminhos=max_rotas
+    )
+    
+    if not caminhos:
         raise HTTPException(status_code=404, detail="Nenhuma rota encontrada")
     
-    # Formata resposta
-    rota_detalhada = []
-    integracoes = []
-    trechos_caminhada = []
-    linhas_usadas = []
+    # Formata resposta com todas as rotas
+    rotas_formatadas = []
     
-    for i in range(len(caminho) - 1):
-        parada_atual, tipo_transporte, identificador = caminho[i]
-        parada_proxima = caminho[i + 1][0]
+    for idx, caminho in enumerate(caminhos, 1):
+        rota_detalhada = []
+        integracoes = []
+        trechos_caminhada = []
+        linhas_usadas = []
         
-        trecho = {
-            "parada_origem": parada_atual,
-            "parada_destino": parada_proxima,
-            "tipo": tipo_transporte,
+        # Processa o caminho
+        i = 0
+        linha_anterior = None
+        
+        while i < len(caminho):
+            if i == len(caminho) - 1:
+                break
+            
+            parada_atual = caminho[i]
+            
+            if i + 1 < len(caminho) and isinstance(caminho[i + 1], str):
+                meio = caminho[i + 1]
+                
+                if i + 2 < len(caminho):
+                    parada_proxima = caminho[i + 2]
+                    
+                    trecho = {
+                        "parada_origem": parada_atual,
+                        "parada_destino": parada_proxima
+                    }
+                    
+                    if meio.startswith("🚶‍♂️"):
+                        # Trecho de caminhada
+                        distancia = int(meio.replace("🚶‍♂️", "").replace("m", ""))
+                        trecho["tipo"] = "caminhada"
+                        trecho["distancia_metros"] = distancia
+                        trechos_caminhada.append(trecho)
+                        i += 3
+                    else:
+                        # Trecho de ônibus
+                        linha_atual = meio
+                        trecho["tipo"] = "onibus"
+                        trecho["linha"] = linha_atual
+                        
+                        if linha_atual not in linhas_usadas:
+                            linhas_usadas.append(linha_atual)
+                        
+                        # Detecta integração
+                        if linha_anterior is not None and linha_atual != linha_anterior:
+                            integracoes.append({
+                                "parada": parada_atual,
+                                "linha_anterior": linha_anterior,
+                                "linha_nova": linha_atual
+                            })
+                        
+                        linha_anterior = linha_atual
+                        i += 2
+                    
+                    rota_detalhada.append(trecho)
+                else:
+                    i += 1
+            else:
+                i += 1
+        
+        # Análise de custo
+        analise = analisar_custo_caminho(caminho)
+        
+        rota_info = {
+            "numero_rota": idx,
+            "custo_total": round(analise['custo_total'], 2),
+            "origem": origem,
+            "destino": destino,
+            "trechos": rota_detalhada,
+            "resumo": {
+                "total_paradas": len([x for x in caminho if isinstance(x, int)]),
+                "total_linhas_onibus": len(linhas_usadas),
+                "total_integracoes": len(integracoes),
+                "total_trechos_caminhada": len(trechos_caminhada),
+                "distancia_total_caminhada_metros": analise['distancia_total_caminhada'],
+                "linhas_utilizadas": linhas_usadas
+            },
+            "integracoes": integracoes,
+            "analise_custo": {
+                "trechos_onibus": analise['trechos_onibus'],
+                "trechos_caminhada": analise['trechos_caminhada'],
+                "trocas_linha": analise['trocas_linha']
+            }
         }
         
-        if tipo_transporte == 'onibus':
-            trecho["linha"] = identificador
-            if identificador not in linhas_usadas:
-                linhas_usadas.append(identificador)
-        elif tipo_transporte == 'caminhada':
-            trecho["distancia"] = identificador
-            trechos_caminhada.append(trecho)
-        
-        rota_detalhada.append(trecho)
-        
-        # Detecta integrações
-        if i > 0:
-            tipo_anterior = caminho[i - 1][1]
-            if tipo_anterior == 'onibus' and tipo_transporte == 'onibus':
-                linha_anterior = caminho[i - 1][2]
-                if identificador != linha_anterior:
-                    integracoes.append({
-                        "parada": parada_atual,
-                        "linha_anterior": linha_anterior,
-                        "linha_nova": identificador
-                    })
+        rotas_formatadas.append(rota_info)
     
-    return {
+    resposta = {
         "status": "sucesso",
         "origem": origem,
         "destino": destino,
-        "rota": rota_detalhada,
-        "integracoes": integracoes,
-        "resumo": {
-            "total_paradas": len(caminho),
-            "total_linhas_onibus": len(linhas_usadas),
-            "total_integracoes": len(integracoes),
-            "total_trechos_caminhada": len(trechos_caminhada),
-            "linhas_utilizadas": linhas_usadas
+        "total_rotas_encontradas": len(rotas_formatadas),
+        "rotas": rotas_formatadas
+    }
+    
+    # Adiciona informação sobre linha direta se existir
+    if linha_direta:
+        resposta["linha_direta"] = {
+            "existe": True,
+            "linha": linha_direta,
+            "numero_paradas": num_paradas_direta
         }
+    
+    return resposta
+
+
+@app.get("/rotas/analise/{numero_rota}", tags=["Rotas"])
+def analisar_rota_detalhada(
+    numero_rota: int = Path(..., description="Número da rota a analisar (1-5)", ge=1, le=5),
+    origem: int = Query(..., description="ID da parada de origem"),
+    destino: int = Query(..., description="ID da parada de destino"),
+    raio_caminhada: int = Query(400, description="Raio máximo de caminhada em metros")
+):
+    """
+    Retorna análise detalhada do custo de uma rota específica.
+    
+    Inclui decomposição completa dos custos e fatores que influenciaram o resultado.
+    """
+    
+    # Validações
+    if origem not in paradas_disponiveis and origem not in coordenadas_paradas:
+        raise HTTPException(status_code=404, detail=f"Parada {origem} não encontrada")
+    
+    if destino not in paradas_disponiveis and destino not in coordenadas_paradas:
+        raise HTTPException(status_code=404, detail=f"Parada {destino} não encontrada")
+    
+    # Busca caminhos
+    caminhos = encontrar_multiplos_caminhos(
+        grafo, 
+        coordenadas_paradas, 
+        origem, 
+        destino, 
+        raio_caminhada=raio_caminhada,
+        max_caminhos=5
+    )
+    
+    if not caminhos or numero_rota > len(caminhos):
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Rota {numero_rota} não encontrada. Total de rotas disponíveis: {len(caminhos)}"
+        )
+    
+    # Analisa a rota escolhida
+    caminho = caminhos[numero_rota - 1]
+    analise = analisar_custo_caminho(caminho)
+    
+    return {
+        "numero_rota": numero_rota,
+        "origem": origem,
+        "destino": destino,
+        "custo_total": round(analise['custo_total'], 2),
+        "resumo": {
+            "trechos_onibus": analise['trechos_onibus'],
+            "trechos_caminhada": analise['trechos_caminhada'],
+            "trocas_linha": analise['trocas_linha'],
+            "distancia_total_caminhada_metros": analise['distancia_total_caminhada']
+        },
+        "componentes": analise['componentes'],
+        "detalhes_trechos": analise['detalhes_trechos']
     }
 
 
 @app.post("/grafo/reconstruir", tags=["Administração"])
-def reconstruir_grafo(raio_caminhada: int = Query(200, description="Raio de caminhada em metros")):
-    """Reconstrói o grafo com novo raio de caminhada"""
+def reconstruir_grafo():
+    """Reconstrói o grafo do zero"""
     
     if os.path.exists(caminho_arquivo_grafo):
         os.remove(caminho_arquivo_grafo)
     
     try:
-        inicializar_grafo(raio_caminhada=raio_caminhada)
+        inicializar_grafo()
         return {
             "status": "sucesso",
-            "raio_caminhada": raio_caminhada,
             "total_paradas": len(paradas_disponiveis),
-            "total_conexoes": sum(len(v) for v in grafo.values())
+            "total_conexoes": sum(len(v) for v in grafo.values()) if grafo else 0,
+            "paradas_com_coordenadas": len(coordenadas_paradas)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
@@ -223,10 +357,13 @@ def status():
     return {
         "grafo_carregado": grafo is not None,
         "total_paradas": len(paradas_disponiveis),
+        "paradas_com_coordenadas": len(coordenadas_paradas),
+        "total_linhas": len(sequencias),
         "total_conexoes": sum(len(v) for v in grafo.values()) if grafo else 0,
         "cache_ativo": True,
         "fonte_dados": "PostgreSQL",
-        "funcionalidade_caminhada": "ativa"
+        "funcionalidade_caminhada": "ativa",
+        "algoritmo": "A* com heurística geográfica"
     }
 
 
@@ -244,11 +381,10 @@ def listar_paradas(
     
     if linha:
         # Filtra paradas que têm a linha especificada
-        paradas_filtradas = {
-            parada: linhas 
-            for parada, linhas in linhas_por_parada.items() 
+        paradas_filtradas = [
+            parada for parada, linhas in linhas_por_parada.items() 
             if linha in linhas
-        }
+        ]
         
         if not paradas_filtradas:
             raise HTTPException(
@@ -256,7 +392,7 @@ def listar_paradas(
                 detail=f"Nenhuma parada encontrada para a linha {linha}"
             )
         
-        resultado = list(paradas_filtradas.keys())
+        resultado = paradas_filtradas
     else:
         resultado = paradas_disponiveis
     
@@ -288,22 +424,14 @@ def detalhes_parada(id_parada: int):
     
     # Busca conexões diretas (vizinhos)
     conexoes_onibus = []
-    conexoes_caminhada = []
     
     if grafo and id_parada in grafo:
         vizinhos_onibus = {}
         
-        for vizinho, tipo_transporte, identificador, custo in grafo[id_parada]:
-            if tipo_transporte == 'onibus':
-                if vizinho not in vizinhos_onibus:
-                    vizinhos_onibus[vizinho] = []
-                vizinhos_onibus[vizinho].append(identificador)
-            elif tipo_transporte == 'caminhada':
-                conexoes_caminhada.append({
-                    "parada_destino": vizinho,
-                    "distancia": identificador,
-                    "custo": round(custo, 2)
-                })
+        for vizinho, linha in grafo[id_parada]:
+            if vizinho not in vizinhos_onibus:
+                vizinhos_onibus[vizinho] = []
+            vizinhos_onibus[vizinho].append(linha)
         
         for vizinho, linhas_conexao in vizinhos_onibus.items():
             conexoes_onibus.append({
@@ -311,21 +439,24 @@ def detalhes_parada(id_parada: int):
                 "linhas": linhas_conexao
             })
     
-    # Informações geográficas se disponíveis
-    info_geo = paradas_geo.get(id_parada, {})
+    # Informações geográficas
+    coordenadas = coordenadas_paradas.get(id_parada)
     
-    return {
+    resposta = {
         "id_parada": id_parada,
         "linhas": linhas,
         "total_linhas": len(linhas),
-        "endereco": info_geo.get('endereco'),
-        "latitude": info_geo.get('lat'),
-        "longitude": info_geo.get('lon'),
         "conexoes_onibus": len(conexoes_onibus),
-        "conexoes_caminhada": len(conexoes_caminhada),
-        "destinos_onibus": conexoes_onibus[:10],  # Limita a 10
-        "destinos_caminhada": conexoes_caminhada[:10]  # Limita a 10
+        "destinos_onibus": conexoes_onibus[:10]  # Limita a 10
     }
+    
+    if coordenadas:
+        resposta["coordenadas"] = {
+            "latitude": coordenadas[0],
+            "longitude": coordenadas[1]
+        }
+    
+    return resposta
 
 
 @app.get("/linhas/", tags=["Linhas"])
@@ -335,15 +466,11 @@ def listar_linhas():
     """
     
     # Extrai todas as linhas únicas
-    linhas_unicas = set()
-    for linhas in linhas_por_parada.values():
-        linhas_unicas.update(linhas)
-    
-    linhas_lista = sorted(list(linhas_unicas))
+    linhas_unicas = sorted(list(sequencias.keys()))
     
     return {
-        "total": len(linhas_lista),
-        "linhas": linhas_lista
+        "total": len(linhas_unicas),
+        "linhas": linhas_unicas
     }
 
 
@@ -352,63 +479,65 @@ def detalhes_linha(cod_linha: str):
     """
     Retorna detalhes de uma linha específica.
     
-    - **cod_linha**: Código da linha (ex: "504.1 - IDA")
+    - **cod_linha**: Código da linha (ex: "504.1-IDA")
     """
     
-    # Busca paradas que têm essa linha
-    paradas_da_linha = [
-        parada for parada, linhas in linhas_por_parada.items()
-        if cod_linha in linhas
-    ]
-    
-    if not paradas_da_linha:
+    if cod_linha not in sequencias:
         raise HTTPException(
             status_code=404,
             detail=f"Linha {cod_linha} não encontrada"
         )
     
+    paradas_da_linha = sequencias[cod_linha]
+    sentido = linhas_info.get(cod_linha, "Desconhecido")
+    
     return {
         "linha": cod_linha,
+        "sentido": sentido,
         "total_paradas": len(paradas_da_linha),
         "paradas": paradas_da_linha
     }
 
 
 @app.get("/paradas/{id_parada}/proximas", tags=["Paradas"])
-def paradas_proximas_caminhada(id_parada: int, raio: Optional[int] = Query(200, description="Raio em metros")):
+def paradas_proximas_caminhada(
+    id_parada: int, 
+    raio: Optional[int] = Query(400, description="Raio em metros", ge=100, le=1000)
+):
     """
     Retorna paradas próximas acessíveis por caminhada.
     
     - **id_parada**: ID da parada de origem
-    - **raio**: Raio máximo em metros (padrão: 200m)
+    - **raio**: Raio máximo em metros (padrão: 400m)
     """
     
-    if id_parada not in paradas_disponiveis:
+    if id_parada not in coordenadas_paradas:
         raise HTTPException(
             status_code=404,
-            detail=f"Parada {id_parada} não encontrada"
+            detail=f"Parada {id_parada} não encontrada ou sem coordenadas"
         )
     
+    from utils import calcular_distancia_haversine
+    
+    coord_origem = coordenadas_paradas[id_parada]
     proximas = []
     
-    if grafo and id_parada in grafo:
-        for vizinho, tipo_transporte, identificador, custo in grafo[id_parada]:
-            if tipo_transporte == 'caminhada':
-                # Extrai distância em metros
-                distancia_str = identificador.replace('m', '')
-                try:
-                    distancia = float(distancia_str)
-                    if distancia <= raio:
-                        info_geo = paradas_geo.get(vizinho, {})
-                        proximas.append({
-                            "parada_id": vizinho,
-                            "distancia_metros": distancia,
-                            "endereco": info_geo.get('endereco'),
-                            "latitude": info_geo.get('lat'),
-                            "longitude": info_geo.get('lon')
-                        })
-                except ValueError:
-                    pass
+    for outra_parada, coord_destino in coordenadas_paradas.items():
+        if outra_parada == id_parada:
+            continue
+        
+        distancia = calcular_distancia_haversine(coord_origem, coord_destino)
+        
+        if distancia <= raio:
+            proximas.append({
+                "parada_id": outra_parada,
+                "distancia_metros": round(distancia, 2),
+                "linhas": linhas_por_parada.get(outra_parada, []),
+                "coordenadas": {
+                    "latitude": coord_destino[0],
+                    "longitude": coord_destino[1]
+                }
+            })
     
     # Ordena por distância
     proximas.sort(key=lambda x: x['distancia_metros'])
@@ -428,16 +557,19 @@ def health_check():
         "status": "healthy",
         "grafo_disponivel": grafo is not None,
         "paradas_carregadas": len(paradas_disponiveis) > 0,
-        "geometrias_carregadas": len(paradas_geo) > 0,
+        "coordenadas_carregadas": len(coordenadas_paradas) > 0,
+        "sequencias_carregadas": len(sequencias) > 0,
         "funcionalidade_caminhada": "ativa",
-        "fonte_dados": "PostgreSQL"
+        "fonte_dados": "PostgreSQL",
+        "algoritmo": "A* com heurística Haversine"
     }
 
 
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "="*60)
-    print("  🚌 API DE ROTAS - VERSÃO COM CAMINHADA")
-    print("  🚶 Raio de caminhada: 200 metros")
+    print("  🚌 API DE ROTAS - VERSÃO COM CAMINHADA E A*")
+    print("  🚶 Raio de caminhada: até 400 metros")
+    print("  🎯 Múltiplas rotas ordenadas por eficiência")
     print("="*60 + "\n")
     uvicorn.run(app, host="127.0.0.1", port=3001, log_level="info")
