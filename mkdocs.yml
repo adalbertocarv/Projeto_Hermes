@@ -1,0 +1,28 @@
+site_name: Projeto Hermes
+
+nav:
+  - Home: index.md
+  - Api:
+    - Api: api/api.md
+  - Consultas:
+    - Consultas: consultas/consultasBanco.md
+  - Funcionalidades:
+    - Funcionalidades: funcionalidades/funcionalidades.md
+  - Modelagem conexoes:
+    - EstruturaDeDados: Modelagem_conexoes/EstruturaDeDados.md
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Dark Mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - toc.integrate
