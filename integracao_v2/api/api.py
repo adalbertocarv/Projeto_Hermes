@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Query, Path
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
-
+from fastapi.middleware.cors import CORSMiddleware
 # =============================================================================
 # CONFIGURAÇÃO DE PATHS PARA IMPORTS
 # =============================================================================
@@ -48,6 +48,23 @@ app = FastAPI(
     version="5.1.0",
     lifespan=lifespan
 )
+
+# ⬇️ ADICIONE ESTAS LINHAS LOGO APÓS CRIAR O APP ⬇️
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "file://",  # Para quando abrir o HTML diretamente
+        "*"  # Permite qualquer origem (remova em produção)
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite GET, POST, etc
+    allow_headers=["*"],  # Permite todos os headers
+)
+
 
 # Caminho para o cache do grafo
 diretorio_atual = os.path.dirname(os.path.abspath(__file__))
@@ -556,6 +573,7 @@ def obter_trecho_linha_geometria(cod_linha: str, sentido: str, id_origem: int, i
             )
             SELECT 
                 ST_AsGeoJSON(
+                    ST_Transform(
                     ST_LineSubstring(
                         tl.geo_linhas_lin,
                         LEAST(
@@ -566,6 +584,8 @@ def obter_trecho_linha_geometria(cod_linha: str, sentido: str, id_origem: int, i
                             ST_LineLocatePoint(tl.geo_linhas_lin, ST_Transform(p_origem.geom, 31983)),
                             ST_LineLocatePoint(tl.geo_linhas_lin, ST_Transform(p_destino.geom, 31983))
                         )
+                       ),
+                       4326 
                     )
                 )::json AS trecho_linha_geojson,
                 
@@ -794,7 +814,67 @@ def detalhes_parada(id_parada: int):
     
     return resposta
 
-
+@app.get("/paradas/localizacoes/all/", tags=["Paradas"])
+def obter_todas_localizacoes_paradas():
+    """
+    Lista a geolocalização (latitude/longitude) e endereço de TODAS as paradas.
+    
+    Utiliza o SELECT: 
+    SELECT ST_X(geom::geometry) as long, ST_Y(geom::geometry) as lat, endereco 
+    FROM linha_sentido_parada.paradas_v1
+    
+    ATENÇÃO: Este endpoint retorna TODOS os registros e pode ser lento.
+    """
+    
+    query_sql = """
+        SELECT 
+            id,
+            ST_X(geom::geometry) as long, 
+            ST_Y(geom::geometry) as lat, 
+            endereco 
+        FROM linha_sentido_parada.paradas_v1
+    """
+    
+    try:
+        # Padrão de conexão utilizado em outras funções do seu api.py
+        conn = psycopg2.connect(
+            host=os.getenv('DB_HOST', '10.233.46.51'),
+            port=os.getenv('DB_PORT', '5432'),
+            database=os.getenv('DB_NAME', 'bdg'),
+            user=os.getenv('DB_USER', 'ana_fialho'),
+            password=os.getenv('DB_PASSWORD', 'Se654c$0')
+        )
+        cursor = conn.cursor()
+        
+        # 1. Busca todos os dados
+        cursor.execute(query_sql)
+        resultados = cursor.fetchall()
+        
+        # 2. Formata os resultados
+        paradas_formatadas = []
+        for row in resultados:
+            paradas_formatadas.append({
+                "id":row[0],
+                "long": row[1],
+                "lat": row[2],
+                "endereco": row[3]
+            })
+        
+        # 3. Fecha a conexão
+        conn.close()
+        
+        return {
+            "total_registros": len(paradas_formatadas),
+            "paradas": paradas_formatadas
+        }
+        
+    except (Exception, psycopg2.DatabaseError) as e:
+        print(f"❌ Erro ao consultar localizações de paradas: {e}")
+        # Tenta fechar a conexão se ela foi aberta antes do erro
+        if 'conn' in locals() and conn and not conn.closed:
+            conn.close()
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar dados no banco: {str(e)}")
+    
 @app.get("/linhas/", tags=["Linhas"])
 def listar_linhas():
     """
